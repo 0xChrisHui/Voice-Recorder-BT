@@ -58,8 +58,13 @@ class Mp3Recorder(
 
     private val isBtPriority: Boolean = bluetoothController != null
 
+    // Audio source choice in BT mode is deliberate: MIC is more docile about respecting
+    // setPreferredDevice than VOICE_COMMUNICATION is. The latter is meant for telephony, runs
+    // through a special pipeline that includes AEC/NS, and on at least some MIUI builds it
+    // ignores the preferred-device hint and stays on the built-in mic even after SCO is up.
+    // MIC + setPreferredDevice is the most direct route to the headset's microphone.
     private val effectiveAudioSource: Int =
-        if (isBtPriority) MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        if (isBtPriority) MediaRecorder.AudioSource.MIC
         else context.config.microphoneMode
 
     private val minBufferSize = AudioRecord.getMinBufferSize(
