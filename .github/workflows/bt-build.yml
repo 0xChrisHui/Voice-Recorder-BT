@@ -1,0 +1,64 @@
+name: Build BT-only APK
+
+on:
+  push:
+    branches: [feat/bluetooth-only]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Cache Android debug keystore (stable signature across builds)
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+          # No restore-keys: we want exact match or fresh keystore.
+
+      - name: Ensure debug keystore exists
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore ~/.android/debug.keystore \
+              -storepass android -keypass android \
+              -alias androiddebugkey \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA -keysize 2048 -validity 10000
+            echo "Generated new debug keystore (will be cached for next build)."
+          else
+            echo "Reusing cached debug keystore."
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Assemble Foss Debug APK
+        run: ./gradlew assembleFossDebug --stacktrace
+
+      - name: Find APK
+        id: find_apk
+        run: |
+          APK=$(find app/build/outputs/apk -type f -name "*.apk" | head -n1)
+          echo "Found: $APK"
+          echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-recorder-bt-${{ steps.find_apk.outputs.short_sha }}
+          path: ${{ steps.find_apk.outputs.apk_path }}
+          retention-days: 30
