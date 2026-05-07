@@ -4,7 +4,6 @@ import android.content.Context
 import android.media.AudioManager
 import android.os.Build
 import android.util.Log
-import org.fossify.voicerecorder.extensions.config
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -13,29 +12,38 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Tee-style logger that writes to both adb's logcat and a plain-text file in the user's
- * recordings folder. Lets us diagnose BT routing problems on devices the user can't easily
- * attach to with ADB — they just stop the recording and look for `bt-debug.log` next to their
- * recordings, then send us the file.
+ * Tee-style logger that writes to both adb's logcat and a plain-text file in the app's
+ * external-files directory. Android 13's scoped storage prevents direct File-API writes to
+ * shared locations like /storage/emulated/0/Recordings, so we keep the log inside the app's
+ * own directory (always writable) and expose it via a "Share debug log" menu item that wraps
+ * it in a FileProvider URI so the user can email/upload it from any handset.
  */
 object BtLog {
     private const val LOG_NAME = "bt-debug.log"
+    private const val LOG_SUBDIR = "logs"
 
     private var writer: PrintWriter? = null
     private val lock = Any()
     private val timestampFmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
+    /** Returns the path the log will be written to. Caller is responsible for existence. */
+    fun getLogFile(context: Context): File {
+        val base = context.getExternalFilesDir(null) ?: context.filesDir
+        val dir = File(base, LOG_SUBDIR)
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, LOG_NAME)
+    }
+
     fun init(context: Context) {
         synchronized(lock) {
             close()
             try {
-                val dir = File(context.config.saveRecordingsFolder)
-                if (!dir.exists()) dir.mkdirs()
-                val file = File(dir, LOG_NAME)
+                val file = getLogFile(context)
                 writer = PrintWriter(FileWriter(file, true), true)
                 val started = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
                 writer?.println("")
                 writer?.println("=== Session start $started ===")
+                writer?.println("file=${file.absolutePath}")
                 writer?.println("device.manufacturer=${Build.MANUFACTURER} model=${Build.MODEL}")
                 writer?.println("device.sdk=${Build.VERSION.SDK_INT} release=${Build.VERSION.RELEASE}")
             } catch (e: Exception) {

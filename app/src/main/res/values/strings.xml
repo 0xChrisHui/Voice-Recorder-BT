@@ -18,6 +18,8 @@
     <string name="bt_miui_guide_title">MIUI background recording setup</string>
     <string name="bt_miui_guide_body">MIUI may kill long recordings. Please set:\n\n• Battery saver: No restrictions\n• Auto-start: Allowed\n• Lock-screen cleanup: Disabled for this app</string>
     <string name="got_it">Got it</string>
+    <string name="share_debug_log">Share debug log</string>
+    <string name="no_debug_log">No debug log yet — record once with Bluetooth first</string>
     <string name="confirm_recording_folder">You must confirm the folder where you want to save your recordings. Please press "OK" to continue.</string>
     <string name="move_recordings">Move recordings</string>
     <string name="move_recordings_to_new_folder_desc">You have existing recordings. Do you want to move them to your new folder?</string>
