@@ -1,6 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_launcher_name">Voice Recorder</string>
+    <string name="app_launcher_name">Voice Recorder BT</string>
+
+    <!-- Bluetooth-only feature strings -->
+    <string name="bt_priority_title">Bluetooth-only input</string>
+    <string name="bt_priority_summary">When a Bluetooth headset is connected, record only from it</string>
+    <string name="bt_disconnect_action_title">When Bluetooth disconnects</string>
+    <string name="bt_disconnect_pause">Pause until reconnected (recommended)</string>
+    <string name="bt_disconnect_stop">Stop and save recording</string>
+    <string name="bt_disconnect_fallback">Fall back to phone microphone</string>
+    <string name="bt_disconnect_fallback_warn">⚠ Will pick up ambient noise like pocket friction</string>
+    <string name="bt_status_bluetooth">🎧 Bluetooth: %1$s</string>
+    <string name="bt_status_phone_mic">🎙 Phone mic</string>
+    <string name="bt_status_waiting">⏸ Waiting for Bluetooth…</string>
+    <string name="bt_status_routing_failed">⚠ Bluetooth routing failed, recording phone mic</string>
+    <string name="bt_must_use_mp3">Bluetooth-only mode supports MP3 only. This recording will be saved as MP3.</string>
+    <string name="bt_miui_guide_title">MIUI background recording setup</string>
+    <string name="bt_miui_guide_body">MIUI may kill long recordings. Please set:\n\n• Battery saver: No restrictions\n• Auto-start: Allowed\n• Lock-screen cleanup: Disabled for this app</string>
+    <string name="got_it">Got it</string>
     <string name="confirm_recording_folder">You must confirm the folder where you want to save your recordings. Please press "OK" to continue.</string>
     <string name="move_recordings">Move recordings</string>
     <string name="move_recordings_to_new_folder_desc">You have existing recordings. Do you want to move them to your new folder?</string>

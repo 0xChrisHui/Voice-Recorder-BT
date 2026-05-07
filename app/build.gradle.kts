@@ -113,7 +113,9 @@ android {
         )
     }
 
-    namespace = project.property("APP_ID").toString()
+    // Namespace stays as the original Fossify package so existing R/BuildConfig imports
+    // continue to resolve. applicationId is independently set via APP_ID in gradle.properties.
+    namespace = "org.fossify.voicerecorder"
 
     lint {
         checkReleaseBuilds = false

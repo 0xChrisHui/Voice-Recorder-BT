@@ -256,4 +256,21 @@ class RecorderFragment(
             binding.recorderVisualizer.update(amplitude)
         }
     }
+
+    @Suppress("unused")
+    @Subscribe(threadMode = ThreadMode.MAIN)
+    fun gotRouteEvent(event: Events.RecordingRoute) {
+        val text = when (event.routeKind) {
+            Events.RecordingRoute.BLUETOOTH ->
+                context.getString(R.string.bt_status_bluetooth, event.deviceName ?: "headset")
+            Events.RecordingRoute.PHONE_MIC ->
+                context.getString(R.string.bt_status_phone_mic)
+            Events.RecordingRoute.WAITING_FOR_BT ->
+                context.getString(R.string.bt_status_waiting)
+            Events.RecordingRoute.ROUTING_FAILED ->
+                context.getString(R.string.bt_status_routing_failed)
+            else -> ""
+        }
+        binding.routeStatus.text = text
+    }
 }

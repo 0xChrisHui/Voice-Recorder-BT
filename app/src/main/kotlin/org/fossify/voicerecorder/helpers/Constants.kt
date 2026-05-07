@@ -106,3 +106,13 @@ const val FILENAME_PATTERN = "filename_pattern"
 
 const val DEFAULT_RECORDINGS_FOLDER = "Recordings"
 const val DEFAULT_FILENAME_PATTERN = "%Y%M%D_%h%m%s"
+
+// Bluetooth-only mode preferences
+const val BT_PRIORITY_ENABLED = "bt_priority_enabled"
+const val BT_DISCONNECT_ACTION = "bt_disconnect_action"
+const val BT_MIUI_GUIDE_SHOWN = "bt_miui_guide_shown"
+
+// Values for BT_DISCONNECT_ACTION
+const val BT_DISCONNECT_PAUSE = 0
+const val BT_DISCONNECT_STOP = 1
+const val BT_DISCONNECT_FALLBACK_MIC = 2

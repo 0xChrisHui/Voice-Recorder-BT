@@ -41,6 +41,7 @@ import org.fossify.voicerecorder.helpers.RECORDING_STOPPED
 import org.fossify.voicerecorder.helpers.STOP_AMPLITUDE_UPDATE
 import org.fossify.voicerecorder.helpers.TOGGLE_PAUSE
 import org.fossify.voicerecorder.models.Events
+import org.fossify.voicerecorder.recorder.BluetoothAudioController
 import org.fossify.voicerecorder.recorder.MediaRecorderWrapper
 import org.fossify.voicerecorder.recorder.Mp3Recorder
 import org.fossify.voicerecorder.recorder.Recorder
@@ -65,6 +66,7 @@ class RecorderService : Service() {
     private var durationTimer = Timer()
     private var amplitudeTimer = Timer()
     private var recorder: Recorder? = null
+    private var bluetoothController: BluetoothAudioController? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -104,12 +106,20 @@ class RecorderService : Service() {
         }
 
         val recordingFolder = defaultFolder.absolutePath
-        recordingPath = "$recordingFolder/${getFormattedFilename()}.${config.getExtension()}"
+        // BT-priority mode forces MP3 because hot-swapping audio source mid-recording requires
+        // AudioRecord + LAME, which only the Mp3Recorder path uses.
+        val btPriorityOn = config.bluetoothPriorityEnabled
+        val effectiveExtension = if (btPriorityOn) getString(R.string.mp3) else config.getExtension()
+        recordingPath = "$recordingFolder/${getFormattedFilename()}.$effectiveExtension"
         resultUri = null
 
         try {
-            recorder = if (recordMp3()) {
-                Mp3Recorder(this)
+            bluetoothController = if (btPriorityOn) {
+                BluetoothAudioController(this).also { it.start() }
+            } else null
+
+            recorder = if (btPriorityOn || recordMp3()) {
+                Mp3Recorder(this, bluetoothController)
             } else {
                 MediaRecorderWrapper(this)
             }
@@ -178,6 +188,8 @@ class RecorderService : Service() {
             }
         }
         recorder = null
+        bluetoothController?.stop()
+        bluetoothController = null
     }
 
     private fun cancelRecording() {
@@ -194,6 +206,8 @@ class RecorderService : Service() {
         }
 
         recorder = null
+        bluetoothController?.stop()
+        bluetoothController = null
         if (isRPlus()) {
             val recordingUri = createDocumentUriUsingFirstParentTreeUri(recordingPath)
             DocumentsContract.deleteDocument(contentResolver, recordingUri)

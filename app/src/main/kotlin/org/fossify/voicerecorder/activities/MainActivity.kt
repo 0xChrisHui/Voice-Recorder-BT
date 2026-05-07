@@ -1,12 +1,17 @@
 package org.fossify.voicerecorder.activities
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.content.res.AppCompatResources
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import me.grantland.widget.AutofitHelper
 import org.fossify.commons.extensions.appLaunched
 import org.fossify.commons.extensions.checkAppSideloading
@@ -41,6 +46,10 @@ import org.greenrobot.eventbus.ThreadMode
 
 class MainActivity : SimpleActivity() {
 
+    private companion object {
+        const val BT_CONNECT_REQUEST_CODE = 901
+    }
+
     private var bus: EventBus? = null
 
     override var isSearchBarEnabled = true
@@ -72,6 +81,17 @@ class MainActivity : SimpleActivity() {
                 toast(org.fossify.commons.R.string.no_audio_permissions)
                 finish()
             }
+        }
+
+        // Bluetooth-only mode needs BLUETOOTH_CONNECT to enumerate the headset and read its name
+        // (API 31+). Requested as a soft, one-shot ask — recording still works if denied, just
+        // without a device name in the status bar.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.BLUETOOTH_CONNECT), BT_CONNECT_REQUEST_CODE
+            )
         }
 
         bus = EventBus.getDefault()

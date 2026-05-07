@@ -100,4 +100,18 @@ class Config(context: Context) : BaseConfig(context) {
     var filenamePattern: String
         get() = prefs.getString(FILENAME_PATTERN, DEFAULT_FILENAME_PATTERN)!!
         set(filenamePattern) = prefs.edit { putString(FILENAME_PATTERN, filenamePattern) }
+
+    // Bluetooth-only mode: when ON and a BT headset is connected, record only from BT.
+    var bluetoothPriorityEnabled: Boolean
+        get() = prefs.getBoolean(BT_PRIORITY_ENABLED, true)
+        set(value) = prefs.edit { putBoolean(BT_PRIORITY_ENABLED, value) }
+
+    // What to do when BT disconnects mid-recording: pause / stop / fallback to phone mic.
+    var btDisconnectAction: Int
+        get() = prefs.getInt(BT_DISCONNECT_ACTION, BT_DISCONNECT_PAUSE)
+        set(value) = prefs.edit { putInt(BT_DISCONNECT_ACTION, value) }
+
+    var btMiuiGuideShown: Boolean
+        get() = prefs.getBoolean(BT_MIUI_GUIDE_SHOWN, false)
+        set(value) = prefs.edit { putBoolean(BT_MIUI_GUIDE_SHOWN, value) }
 }
