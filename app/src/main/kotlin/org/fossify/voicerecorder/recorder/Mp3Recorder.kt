@@ -88,14 +88,17 @@ class Mp3Recorder(
     @Volatile private var pendingClearDevice: Boolean = false
 
     /**
-     * Builds a fresh AudioRecord. When [routeToBt] is true, the audio framework's communication
-     * device (set elsewhere via [BluetoothAudioController.requestBluetoothScoRoute]) is what
-     * actually steers VOICE_COMMUNICATION input to the BT mic — we deliberately do NOT call
-     * [AudioRecord.setPreferredDevice], because mixing the two routing mechanisms confuses the
-     * framework on at least some MIUI builds and silently yields zero-byte reads.
+     * Builds a fresh AudioRecord. When [preferredBtInput] is non-null, both routing mechanisms
+     * are engaged together:
+     *   - [BluetoothAudioController.requestBluetoothScoRoute] (called by the caller before this)
+     *     puts the platform into a "communication" state and brings the SCO physical link up.
+     *   - [AudioRecord.setPreferredDevice] explicitly pins the AudioRecord's input to the BT mic.
+     *     Per Android docs, this takes precedence over the communication-device routing for
+     *     input, and is necessary on at least some MIUI builds where setCommunicationDevice
+     *     correctly routes output to the headset but leaves input on the built-in mic.
      */
     @SuppressLint("MissingPermission")
-    private fun createAudioRecord(routeToBt: Boolean): AudioRecord {
+    private fun createAudioRecord(preferredBtInput: AudioDeviceInfo?): AudioRecord {
         val ar = AudioRecord.Builder()
             .setAudioSource(effectiveAudioSource)
             .setAudioFormat(
@@ -107,10 +110,17 @@ class Mp3Recorder(
             )
             .setBufferSizeInBytes(minBufferSize * 2)
             .build()
+        if (preferredBtInput != null) {
+            val ok = ar.setPreferredDevice(preferredBtInput)
+            Log.d(
+                TAG,
+                "setPreferredDevice(${preferredBtInput.productName}, type=${preferredBtInput.type}) -> $ok"
+            )
+        }
         Log.d(
             TAG,
             "createAudioRecord: source=$effectiveAudioSource sampleRate=${context.config.samplingRate} " +
-                "routeToBt=$routeToBt state=${ar.state}"
+                "preferredBt=${preferredBtInput?.productName} state=${ar.state}"
         )
         return ar
     }
@@ -152,7 +162,7 @@ class Mp3Recorder(
         val initialBt = if (isBtPriority) bluetoothController?.currentBluetoothInputDevice() else null
         var btRouted = false
         if (initialBt != null) {
-            Log.d(TAG, "BT device present at start: ${initialBt.productName}")
+            Log.d(TAG, "BT input device present at start: ${initialBt.productName} (id=${initialBt.id})")
             val accepted = bluetoothController!!.requestBluetoothScoRoute()
             if (accepted) {
                 btRouted = bluetoothController!!.waitForBluetoothRoute()
@@ -163,7 +173,11 @@ class Mp3Recorder(
                 Log.w(TAG, "setCommunicationDevice rejected the request")
             }
         }
-        val ar = createAudioRecord(routeToBt = btRouted)
+        // Pin AudioRecord input to the BT mic on top of communication-device routing. On some
+        // MIUI builds the latter routes output but leaves input on the built-in mic; the former
+        // forces the matter.
+        val preferredBt = if (btRouted) initialBt else null
+        val ar = createAudioRecord(preferredBtInput = preferredBt)
         if (ar.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord not initialized (state=${ar.state}); aborting")
             context.showErrorToast(IllegalStateException("AudioRecord init failed: ${ar.state}"))
@@ -179,11 +193,22 @@ class Mp3Recorder(
         ensureBackgroundThread {
             try {
                 audioRecord.get()?.startRecording()
+                val live = audioRecord.get()
                 Log.d(
                     TAG,
-                    "startRecording: recordingState=${audioRecord.get()?.recordingState} " +
-                        "routedDevice.type=${audioRecord.get()?.routedDevice?.type}"
+                    "startRecording: recordingState=${live?.recordingState} " +
+                        "routedDevice.productName=${live?.routedDevice?.productName} " +
+                        "routedDevice.type=${live?.routedDevice?.type} " +
+                        "(BLUETOOTH_SCO=${AudioDeviceInfo.TYPE_BLUETOOTH_SCO}, " +
+                        "BUILTIN_MIC=${AudioDeviceInfo.TYPE_BUILTIN_MIC})"
                 )
+                if (preferredBt != null && live?.routedDevice?.let { isBluetoothInputType(it) } != true) {
+                    Log.e(
+                        TAG,
+                        "PROBLEM: requested BT input but AudioRecord routed to type " +
+                            "${live?.routedDevice?.type} instead. Recording will pick up the wrong mic."
+                    )
+                }
             } catch (e: Exception) {
                 context.showErrorToast(e)
                 return@ensureBackgroundThread
@@ -270,8 +295,7 @@ class Mp3Recorder(
         }
 
         // Step 2: rebuild the AudioRecord so the new route actually takes effect.
-        // We always rebuild rather than mixing setPreferredDevice with setCommunicationDevice;
-        // the latter combination silently fails on some MIUI builds.
+        val preferredBt = if (actualBt) newDevice else null
         val current = audioRecord.get() ?: return
         synchronized(audioRecordLock) {
             try {
@@ -279,7 +303,7 @@ class Mp3Recorder(
             } catch (_: Exception) {
             }
             current.release()
-            val rebuilt = createAudioRecord(routeToBt = actualBt)
+            val rebuilt = createAudioRecord(preferredBtInput = preferredBt)
             try {
                 rebuilt.startRecording()
             } catch (e: Exception) {
@@ -289,7 +313,8 @@ class Mp3Recorder(
             Log.d(
                 TAG,
                 "applyPendingSwitch done: state=${rebuilt.recordingState} " +
-                    "routed=${rebuilt.routedDevice?.type}"
+                    "routed.productName=${rebuilt.routedDevice?.productName} " +
+                    "routed.type=${rebuilt.routedDevice?.type}"
             )
         }
         postRouteEvent()
