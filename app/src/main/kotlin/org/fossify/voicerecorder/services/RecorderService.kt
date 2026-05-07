@@ -31,6 +31,7 @@ import org.fossify.voicerecorder.activities.SplashActivity
 import org.fossify.voicerecorder.extensions.config
 import org.fossify.voicerecorder.extensions.getFormattedFilename
 import org.fossify.voicerecorder.extensions.updateWidgets
+import org.fossify.voicerecorder.helpers.BtLog
 import org.fossify.voicerecorder.helpers.CANCEL_RECORDING
 import org.fossify.voicerecorder.helpers.EXTENSION_MP3
 import org.fossify.voicerecorder.helpers.GET_RECORDER_INFO
@@ -153,6 +154,10 @@ class RecorderService : Service() {
         resultUri = null
 
         try {
+            if (btPriorityOn) {
+                BtLog.init(this)
+                BtLog.d("Service", "startRecording: btPriorityOn, ext=$effectiveExtension")
+            }
             bluetoothController = if (btPriorityOn) {
                 BluetoothAudioController(this).also { it.start() }
             } else null
@@ -229,6 +234,7 @@ class RecorderService : Service() {
         recorder = null
         bluetoothController?.stop()
         bluetoothController = null
+        BtLog.close()
     }
 
     private fun cancelRecording() {
@@ -247,6 +253,7 @@ class RecorderService : Service() {
         recorder = null
         bluetoothController?.stop()
         bluetoothController = null
+        BtLog.close()
         if (isRPlus()) {
             val recordingUri = createDocumentUriUsingFirstParentTreeUri(recordingPath)
             DocumentsContract.deleteDocument(contentResolver, recordingUri)

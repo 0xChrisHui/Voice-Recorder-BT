@@ -8,7 +8,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import org.fossify.voicerecorder.helpers.BtLog
 
 /**
  * Owns Bluetooth-headset audio routing for recording.
@@ -38,6 +38,8 @@ class BluetoothAudioController(private val context: Context) {
     private var deviceCallback: AudioDeviceCallback? = null
     private var pendingDebounce: Runnable? = null
     private var isStarted = false
+    private var savedAudioMode: Int = AudioManager.MODE_NORMAL
+    private var modeSwapped = false
 
     fun setListener(l: OnRouteChangeListener?) {
         listener = l
@@ -46,6 +48,21 @@ class BluetoothAudioController(private val context: Context) {
     fun start() {
         if (isStarted) return
         isStarted = true
+
+        // Push the platform into "communication mode". On some MIUI builds this is required for
+        // the BT mic to actually be picked up — without it the audio HAL keeps input on the
+        // built-in microphone even when the SCO link is up. Save the previous mode so we can
+        // restore it on stop().
+        savedAudioMode = audioManager.mode
+        try {
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            modeSwapped = true
+            BtLog.d(TAG, "audioManager.mode: $savedAudioMode -> MODE_IN_COMMUNICATION (3)")
+        } catch (e: Exception) {
+            BtLog.w(TAG, "Failed to set MODE_IN_COMMUNICATION", e)
+        }
+
+        BtLog.dumpDeviceSnapshot(audioManager)
 
         val cb = object : AudioDeviceCallback() {
             override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
@@ -70,6 +87,15 @@ class BluetoothAudioController(private val context: Context) {
         pendingDebounce?.let { mainHandler.removeCallbacks(it) }
         pendingDebounce = null
         releaseBluetoothScoRoute()
+        if (modeSwapped) {
+            try {
+                audioManager.mode = savedAudioMode
+                BtLog.d(TAG, "audioManager.mode restored to $savedAudioMode")
+            } catch (e: Exception) {
+                BtLog.w(TAG, "Failed to restore audio mode", e)
+            }
+            modeSwapped = false
+        }
         listener = null
     }
 
@@ -113,11 +139,11 @@ class BluetoothAudioController(private val context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val commDev = pickBluetoothCommunicationDevice()
                 if (commDev == null) {
-                    Log.w(TAG, "No Bluetooth communication device available; cannot route")
+                    BtLog.w(TAG, "No Bluetooth communication device available; cannot route")
                     return false
                 }
                 val ok = audioManager.setCommunicationDevice(commDev)
-                Log.d(TAG, "setCommunicationDevice(${commDev.productName}) -> $ok")
+                BtLog.d(TAG, "setCommunicationDevice(${commDev.productName}) -> $ok")
                 ok
             } else {
                 @Suppress("DEPRECATION")
@@ -127,7 +153,7 @@ class BluetoothAudioController(private val context: Context) {
                 true
             }
         } catch (e: Exception) {
-            Log.w(TAG, "requestBluetoothScoRoute failed", e)
+            BtLog.w(TAG, "requestBluetoothScoRoute failed", e)
             false
         }
     }
@@ -150,7 +176,7 @@ class BluetoothAudioController(private val context: Context) {
                 audioManager.stopBluetoothSco()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "releaseBluetoothScoRoute failed", e)
+            BtLog.w(TAG, "releaseBluetoothScoRoute failed", e)
         }
     }
 
@@ -169,12 +195,12 @@ class BluetoothAudioController(private val context: Context) {
             while (System.currentTimeMillis() < deadline) {
                 val current = audioManager.communicationDevice
                 if (current != null && isBluetoothInputType(current)) {
-                    Log.d(TAG, "BT communication active: ${current.productName}")
+                    BtLog.d(TAG, "BT communication active: ${current.productName}")
                     return true
                 }
                 Thread.sleep(POLL_INTERVAL_MS)
             }
-            Log.w(
+            BtLog.w(
                 TAG,
                 "Timed out waiting for BT route. Current communicationDevice=" +
                     "${audioManager.communicationDevice?.productName} " +

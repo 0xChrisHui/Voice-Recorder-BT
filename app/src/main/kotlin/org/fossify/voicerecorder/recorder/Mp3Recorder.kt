@@ -8,7 +8,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.util.Log
+import org.fossify.voicerecorder.helpers.BtLog
 import com.naman14.androidlame.AndroidLame
 import com.naman14.androidlame.LameBuilder
 import org.fossify.commons.extensions.showErrorToast
@@ -117,12 +117,12 @@ class Mp3Recorder(
             .build()
         if (preferredBtInput != null) {
             val ok = ar.setPreferredDevice(preferredBtInput)
-            Log.d(
+            BtLog.d(
                 TAG,
                 "setPreferredDevice(${preferredBtInput.productName}, type=${preferredBtInput.type}) -> $ok"
             )
         }
-        Log.d(
+        BtLog.d(
             TAG,
             "createAudioRecord: source=$effectiveAudioSource sampleRate=${context.config.samplingRate} " +
                 "preferredBt=${preferredBtInput?.productName} state=${ar.state}"
@@ -167,15 +167,15 @@ class Mp3Recorder(
         val initialBt = if (isBtPriority) bluetoothController?.currentBluetoothInputDevice() else null
         var btRouted = false
         if (initialBt != null) {
-            Log.d(TAG, "BT input device present at start: ${initialBt.productName} (id=${initialBt.id})")
+            BtLog.d(TAG, "BT input device present at start: ${initialBt.productName} (id=${initialBt.id})")
             val accepted = bluetoothController!!.requestBluetoothScoRoute()
             if (accepted) {
                 btRouted = bluetoothController!!.waitForBluetoothRoute()
                 if (!btRouted) {
-                    Log.w(TAG, "BT route did not become active in time, falling back to phone mic")
+                    BtLog.w(TAG, "BT route did not become active in time, falling back to phone mic")
                 }
             } else {
-                Log.w(TAG, "setCommunicationDevice rejected the request")
+                BtLog.w(TAG, "setCommunicationDevice rejected the request")
             }
         }
         // Pin AudioRecord input to the BT mic on top of communication-device routing. On some
@@ -184,7 +184,7 @@ class Mp3Recorder(
         val preferredBt = if (btRouted) initialBt else null
         val ar = createAudioRecord(preferredBtInput = preferredBt)
         if (ar.state != AudioRecord.STATE_INITIALIZED) {
-            Log.e(TAG, "AudioRecord not initialized (state=${ar.state}); aborting")
+            BtLog.e(TAG, "AudioRecord not initialized (state=${ar.state}); aborting")
             context.showErrorToast(IllegalStateException("AudioRecord init failed: ${ar.state}"))
             try { ar.release() } catch (_: Exception) {}
             cleanupOnStartFailure()
@@ -199,7 +199,7 @@ class Mp3Recorder(
             try {
                 audioRecord.get()?.startRecording()
                 val live = audioRecord.get()
-                Log.d(
+                BtLog.d(
                     TAG,
                     "startRecording: recordingState=${live?.recordingState} " +
                         "routedDevice.productName=${live?.routedDevice?.productName} " +
@@ -208,7 +208,7 @@ class Mp3Recorder(
                         "BUILTIN_MIC=${AudioDeviceInfo.TYPE_BUILTIN_MIC})"
                 )
                 if (preferredBt != null && live?.routedDevice?.let { isBluetoothInputType(it) } != true) {
-                    Log.e(
+                    BtLog.e(
                         TAG,
                         "PROBLEM: requested BT input but AudioRecord routed to type " +
                             "${live?.routedDevice?.type} instead. Recording will pick up the wrong mic."
@@ -250,7 +250,7 @@ class Mp3Recorder(
                     consecutiveZeroReads++
                     // After ~1s of nothing, log loudly. After ~3s, post a routing-failure event.
                     if (consecutiveZeroReads == ZERO_READ_WARN_THRESHOLD) {
-                        Log.w(
+                        BtLog.w(
                             TAG,
                             "$ZERO_READ_WARN_THRESHOLD non-positive reads in a row " +
                                 "(count=$count, source=$effectiveAudioSource, " +
@@ -258,7 +258,7 @@ class Mp3Recorder(
                         )
                     }
                     if (consecutiveZeroReads == ZERO_READ_FAIL_THRESHOLD) {
-                        Log.e(TAG, "Audio input appears dead; posting ROUTING_FAILED")
+                        BtLog.e(TAG, "Audio input appears dead; posting ROUTING_FAILED")
                         EventBus.getDefault().post(
                             Events.RecordingRoute(
                                 Events.RecordingRoute.ROUTING_FAILED,
@@ -283,7 +283,7 @@ class Mp3Recorder(
             pendingClearDevice = false
         }
 
-        Log.d(TAG, "applyPendingSwitch: clear=$isClear newDevice=${newDevice?.productName}")
+        BtLog.d(TAG, "applyPendingSwitch: clear=$isClear newDevice=${newDevice?.productName}")
 
         // Step 1: re-route communication audio.
         val targetIsBt = !isClear && newDevice != null
@@ -293,7 +293,7 @@ class Mp3Recorder(
                 actualBt = bluetoothController.waitForBluetoothRoute()
             }
             if (!actualBt) {
-                Log.w(TAG, "Hot-swap to BT failed; staying on phone mic for this rebuild")
+                BtLog.w(TAG, "Hot-swap to BT failed; staying on phone mic for this rebuild")
             }
         } else {
             bluetoothController?.releaseBluetoothScoRoute()
@@ -315,7 +315,7 @@ class Mp3Recorder(
                 context.showErrorToast(e)
             }
             audioRecord.set(rebuilt)
-            Log.d(
+            BtLog.d(
                 TAG,
                 "applyPendingSwitch done: state=${rebuilt.recordingState} " +
                     "routed.productName=${rebuilt.routedDevice?.productName} " +
