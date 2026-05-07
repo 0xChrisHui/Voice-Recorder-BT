@@ -123,6 +123,43 @@ class BluetoothAudioController(private val context: Context) {
         }
     }
 
+    /**
+     * Block (busy-wait) until the audio framework's communication device matches [target] or
+     * we run out of time. setCommunicationDevice() returns immediately with `true` once it
+     * accepts the request, but the SCO link itself takes a moment to establish — if you create
+     * an AudioRecord before this resolves, you get an instance bound to the previous (wrong)
+     * input and reads return 0 forever.
+     *
+     * Returns true if the route is now active.
+     */
+    fun waitForCommunicationDeviceMatch(target: AudioDeviceInfo, timeoutMs: Long = 3000): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            // On older API, poll isBluetoothScoOn instead.
+            val deadlineLegacy = System.currentTimeMillis() + timeoutMs
+            while (System.currentTimeMillis() < deadlineLegacy) {
+                @Suppress("DEPRECATION")
+                if (audioManager.isBluetoothScoOn) return true
+                Thread.sleep(POLL_INTERVAL_MS)
+            }
+            return false
+        }
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val current = audioManager.communicationDevice
+            if (current?.id == target.id) {
+                Log.d(TAG, "Communication device active: ${current.productName}")
+                return true
+            }
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+        Log.w(
+            TAG,
+            "Timed out waiting for communication device. Wanted ${target.productName}, got " +
+                "${audioManager.communicationDevice?.productName}"
+        )
+        return false
+    }
+
     private fun scheduleEvaluate() {
         pendingDebounce?.let { mainHandler.removeCallbacks(it) }
         val r = Runnable { evaluate() }
@@ -148,5 +185,6 @@ class BluetoothAudioController(private val context: Context) {
     companion object {
         private const val TAG = "BtAudioCtrl"
         private const val DEBOUNCE_MS = 500L
+        private const val POLL_INTERVAL_MS = 100L
     }
 }

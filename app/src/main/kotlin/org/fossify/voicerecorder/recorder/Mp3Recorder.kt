@@ -8,6 +8,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import com.naman14.androidlame.AndroidLame
 import com.naman14.androidlame.LameBuilder
 import org.fossify.commons.extensions.showErrorToast
@@ -36,8 +37,8 @@ import kotlin.math.abs
  *  - On BT disconnect, behave per [org.fossify.voicerecorder.helpers.Config.btDisconnectAction]:
  *      pause / stop / fall back to phone mic.
  *
- * The hot-swap is best-effort: it first tries [AudioRecord.setPreferredDevice] (no audio gap),
- * and on failure rebuilds the [AudioRecord] (~150ms gap).
+ * Hot-swap rebuilds the [AudioRecord] on each route change (~150ms audio gap), which is more
+ * reliable on MIUI than mixing setPreferredDevice with setCommunicationDevice.
  */
 class Mp3Recorder(
     val context: Context,
@@ -75,8 +76,15 @@ class Mp3Recorder(
     @Volatile private var pendingPreferredDevice: AudioDeviceInfo? = null
     @Volatile private var pendingClearDevice: Boolean = false
 
+    /**
+     * Builds a fresh AudioRecord. When [routeToBt] is true, the audio framework's communication
+     * device (set elsewhere via [BluetoothAudioController.requestBluetoothScoRoute]) is what
+     * actually steers VOICE_COMMUNICATION input to the BT mic — we deliberately do NOT call
+     * [AudioRecord.setPreferredDevice], because mixing the two routing mechanisms confuses the
+     * framework on at least some MIUI builds and silently yields zero-byte reads.
+     */
     @SuppressLint("MissingPermission")
-    private fun createAudioRecord(preferredDevice: AudioDeviceInfo?): AudioRecord {
+    private fun createAudioRecord(routeToBt: Boolean): AudioRecord {
         val ar = AudioRecord.Builder()
             .setAudioSource(effectiveAudioSource)
             .setAudioFormat(
@@ -88,9 +96,11 @@ class Mp3Recorder(
             )
             .setBufferSizeInBytes(minBufferSize * 2)
             .build()
-        if (preferredDevice != null) {
-            ar.preferredDevice = preferredDevice
-        }
+        Log.d(
+            TAG,
+            "createAudioRecord: source=$effectiveAudioSource sampleRate=${context.config.samplingRate} " +
+                "routeToBt=$routeToBt state=${ar.state}"
+        )
         return ar
     }
 
@@ -128,23 +138,45 @@ class Mp3Recorder(
 
         // Initial input device choice: BT if connected & priority on, else default mic.
         val initialBt = if (isBtPriority) bluetoothController?.currentBluetoothInputDevice() else null
+        var btRouted = false
         if (initialBt != null) {
-            bluetoothController?.requestBluetoothScoRoute(initialBt)
+            Log.d(TAG, "BT device present at start: ${initialBt.productName}")
+            val accepted = bluetoothController!!.requestBluetoothScoRoute(initialBt)
+            if (accepted) {
+                btRouted = bluetoothController!!.waitForCommunicationDeviceMatch(initialBt)
+                if (!btRouted) {
+                    Log.w(TAG, "BT route did not become active in time, falling back to phone mic")
+                }
+            } else {
+                Log.w(TAG, "setCommunicationDevice rejected the request")
+            }
+        }
+        val ar = createAudioRecord(routeToBt = btRouted)
+        if (ar.state != AudioRecord.STATE_INITIALIZED) {
+            Log.e(TAG, "AudioRecord not initialized (state=${ar.state}); aborting")
+            context.showErrorToast(IllegalStateException("AudioRecord init failed: ${ar.state}"))
+            return
         }
         synchronized(audioRecordLock) {
-            audioRecord.set(createAudioRecord(initialBt))
+            audioRecord.set(ar)
         }
         bluetoothController?.setListener(this)
 
         ensureBackgroundThread {
             try {
                 audioRecord.get()?.startRecording()
+                Log.d(
+                    TAG,
+                    "startRecording: recordingState=${audioRecord.get()?.recordingState} " +
+                        "routedDevice.type=${audioRecord.get()?.routedDevice?.type}"
+                )
             } catch (e: Exception) {
                 context.showErrorToast(e)
                 return@ensureBackgroundThread
             }
             postRouteEvent()
 
+            var consecutiveZeroReads = 0
             while (!isStopped.get()) {
                 // Apply any pending device change *before* reading more PCM.
                 applyPendingSwitch()
@@ -154,12 +186,13 @@ class Mp3Recorder(
                     continue
                 }
 
-                val ar = audioRecord.get() ?: run {
+                val live = audioRecord.get() ?: run {
                     Thread.sleep(SLEEP_WHEN_PAUSED_MS)
                     continue
                 }
-                val count = ar.read(rawData, 0, minBufferSize)
+                val count = live.read(rawData, 0, minBufferSize)
                 if (count > 0) {
+                    consecutiveZeroReads = 0
                     val encoded = androidLame!!.encode(rawData, rawData, count, mp3buffer)
                     if (encoded > 0) {
                         try {
@@ -169,6 +202,27 @@ class Mp3Recorder(
                             e.printStackTrace()
                         }
                     }
+                } else {
+                    consecutiveZeroReads++
+                    // After ~1s of nothing, log loudly. After ~3s, post a routing-failure event.
+                    if (consecutiveZeroReads == ZERO_READ_WARN_THRESHOLD) {
+                        Log.w(
+                            TAG,
+                            "$ZERO_READ_WARN_THRESHOLD non-positive reads in a row " +
+                                "(count=$count, source=$effectiveAudioSource, " +
+                                "routed=${live.routedDevice?.type})"
+                        )
+                    }
+                    if (consecutiveZeroReads == ZERO_READ_FAIL_THRESHOLD) {
+                        Log.e(TAG, "Audio input appears dead; posting ROUTING_FAILED")
+                        EventBus.getDefault().post(
+                            Events.RecordingRoute(
+                                Events.RecordingRoute.ROUTING_FAILED,
+                                bluetoothController?.currentBluetoothInputDevice()?.productName?.toString()
+                            )
+                        )
+                    }
+                    Thread.sleep(SLEEP_WHEN_NO_DATA_MS)
                 }
             }
         }
@@ -185,42 +239,39 @@ class Mp3Recorder(
             pendingClearDevice = false
         }
 
-        val current = audioRecord.get() ?: return
-        val target: AudioDeviceInfo? = if (isClear) null else newDevice
+        Log.d(TAG, "applyPendingSwitch: clear=$isClear newDevice=${newDevice?.productName}")
 
-        // Approach A: try non-disruptive setPreferredDevice.
-        val accepted = try {
-            current.setPreferredDevice(target)
-        } catch (e: Exception) {
-            false
-        }
-        // Give the audio framework a moment to actually re-route.
-        Thread.sleep(SETPREFERRED_VERIFY_DELAY_MS)
-        val routed = current.routedDevice
-        val matched = if (target == null) {
-            !isBluetoothInputType(routed)
+        // Step 1: re-route the audio framework's communication device.
+        val targetIsBt = !isClear && newDevice != null
+        if (targetIsBt) {
+            bluetoothController?.requestBluetoothScoRoute(newDevice!!)
+            bluetoothController?.waitForCommunicationDeviceMatch(newDevice)
         } else {
-            routed?.id == target.id
-        }
-        if (accepted && matched) {
-            postRouteEvent()
-            return
+            bluetoothController?.releaseBluetoothScoRoute()
         }
 
-        // Approach B: rebuild the AudioRecord. Brief audio gap (~150ms).
+        // Step 2: rebuild the AudioRecord so the new route actually takes effect.
+        // We always rebuild rather than mixing setPreferredDevice with setCommunicationDevice;
+        // the latter combination silently fails on some MIUI builds.
+        val current = audioRecord.get() ?: return
         synchronized(audioRecordLock) {
             try {
                 current.stop()
             } catch (_: Exception) {
             }
             current.release()
-            val rebuilt = createAudioRecord(target)
+            val rebuilt = createAudioRecord(routeToBt = targetIsBt)
             try {
                 rebuilt.startRecording()
             } catch (e: Exception) {
                 context.showErrorToast(e)
             }
             audioRecord.set(rebuilt)
+            Log.d(
+                TAG,
+                "applyPendingSwitch done: state=${rebuilt.recordingState} " +
+                    "routed=${rebuilt.routedDevice?.type}"
+            )
         }
         postRouteEvent()
     }
@@ -236,18 +287,17 @@ class Mp3Recorder(
     private fun postRouteEvent() {
         val ar = audioRecord.get() ?: return
         val routed = ar.routedDevice
-        val expected = pendingPreferredDevice
         val want = if (isBtPriority) bluetoothController?.currentBluetoothInputDevice() else null
 
         val event = when {
             isBtPriority && want != null && !isBluetoothInputType(routed) ->
-                Events.RecordingRoute(Events.RecordingRoute.Companion.ROUTING_FAILED, want.productName?.toString())
+                Events.RecordingRoute(Events.RecordingRoute.ROUTING_FAILED, want.productName?.toString())
             isBluetoothInputType(routed) ->
-                Events.RecordingRoute(Events.RecordingRoute.Companion.BLUETOOTH, routed?.productName?.toString())
+                Events.RecordingRoute(Events.RecordingRoute.BLUETOOTH, routed?.productName?.toString())
             isPaused.get() && pausedDueToBtLoss.get() ->
-                Events.RecordingRoute(Events.RecordingRoute.Companion.WAITING_FOR_BT, null)
+                Events.RecordingRoute(Events.RecordingRoute.WAITING_FOR_BT, null)
             else ->
-                Events.RecordingRoute(Events.RecordingRoute.Companion.PHONE_MIC, null)
+                Events.RecordingRoute(Events.RecordingRoute.PHONE_MIC, null)
         }
         EventBus.getDefault().post(event)
     }
@@ -322,7 +372,11 @@ class Mp3Recorder(
     }
 
     companion object {
+        private const val TAG = "Mp3Recorder"
         private const val SLEEP_WHEN_PAUSED_MS = 50L
-        private const val SETPREFERRED_VERIFY_DELAY_MS = 150L
+        private const val SLEEP_WHEN_NO_DATA_MS = 20L
+        // ~20ms per read at 48kHz mono. 50 zero-reads ≈ 1 second of nothing.
+        private const val ZERO_READ_WARN_THRESHOLD = 50
+        private const val ZERO_READ_FAIL_THRESHOLD = 150
     }
 }
