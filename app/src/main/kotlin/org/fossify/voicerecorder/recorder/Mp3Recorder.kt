@@ -29,6 +29,16 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
 /**
+ * Listener for state changes the recorder makes on its own (not in response to a user click).
+ * Implementers must accept calls on any thread and post to the main thread themselves if needed.
+ */
+interface RecorderListener {
+    fun onAutoPause(reason: String)
+    fun onAutoResume()
+    fun onAutoStop(reason: String)
+}
+
+/**
  * MP3 recorder built on top of [AudioRecord] + LAME.
  *
  * When [bluetoothController] is supplied (i.e. BT-priority mode is on), the recorder will:
@@ -42,7 +52,8 @@ import kotlin.math.abs
  */
 class Mp3Recorder(
     val context: Context,
-    private val bluetoothController: BluetoothAudioController? = null
+    private val bluetoothController: BluetoothAudioController? = null,
+    private val recorderListener: RecorderListener? = null
 ) : Recorder, BluetoothAudioController.OnRouteChangeListener {
 
     private val isBtPriority: Boolean = bluetoothController != null
@@ -126,6 +137,7 @@ class Mp3Recorder(
             }
         } catch (e: FileNotFoundException) {
             e.printStackTrace()
+            cleanupOnStartFailure()
             return
         }
 
@@ -141,9 +153,9 @@ class Mp3Recorder(
         var btRouted = false
         if (initialBt != null) {
             Log.d(TAG, "BT device present at start: ${initialBt.productName}")
-            val accepted = bluetoothController!!.requestBluetoothScoRoute(initialBt)
+            val accepted = bluetoothController!!.requestBluetoothScoRoute()
             if (accepted) {
-                btRouted = bluetoothController!!.waitForCommunicationDeviceMatch(initialBt)
+                btRouted = bluetoothController!!.waitForBluetoothRoute()
                 if (!btRouted) {
                     Log.w(TAG, "BT route did not become active in time, falling back to phone mic")
                 }
@@ -155,6 +167,8 @@ class Mp3Recorder(
         if (ar.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord not initialized (state=${ar.state}); aborting")
             context.showErrorToast(IllegalStateException("AudioRecord init failed: ${ar.state}"))
+            try { ar.release() } catch (_: Exception) {}
+            cleanupOnStartFailure()
             return
         }
         synchronized(audioRecordLock) {
@@ -241,11 +255,16 @@ class Mp3Recorder(
 
         Log.d(TAG, "applyPendingSwitch: clear=$isClear newDevice=${newDevice?.productName}")
 
-        // Step 1: re-route the audio framework's communication device.
+        // Step 1: re-route communication audio.
         val targetIsBt = !isClear && newDevice != null
+        var actualBt = false
         if (targetIsBt) {
-            bluetoothController?.requestBluetoothScoRoute(newDevice!!)
-            bluetoothController?.waitForCommunicationDeviceMatch(newDevice)
+            if (bluetoothController?.requestBluetoothScoRoute() == true) {
+                actualBt = bluetoothController.waitForBluetoothRoute()
+            }
+            if (!actualBt) {
+                Log.w(TAG, "Hot-swap to BT failed; staying on phone mic for this rebuild")
+            }
         } else {
             bluetoothController?.releaseBluetoothScoRoute()
         }
@@ -260,7 +279,7 @@ class Mp3Recorder(
             } catch (_: Exception) {
             }
             current.release()
-            val rebuilt = createAudioRecord(routeToBt = targetIsBt)
+            val rebuilt = createAudioRecord(routeToBt = actualBt)
             try {
                 rebuilt.startRecording()
             } catch (e: Exception) {
@@ -274,6 +293,15 @@ class Mp3Recorder(
             )
         }
         postRouteEvent()
+    }
+
+    private fun cleanupOnStartFailure() {
+        try { androidLame?.flush(mp3buffer) } catch (_: Exception) {}
+        androidLame = null
+        try { outputStream?.close() } catch (_: Exception) {}
+        outputStream = null
+        try { fileDescriptor?.close() } catch (_: Exception) {}
+        fileDescriptor = null
     }
 
     private fun isBluetoothInputType(d: AudioDeviceInfo?): Boolean {
@@ -347,10 +375,11 @@ class Mp3Recorder(
     override fun onBluetoothConnected(device: AudioDeviceInfo) {
         if (!isBtPriority) return
         pendingPreferredDevice = device
-        // If we paused because BT was lost, auto-resume now that it's back.
-        if (pausedDueToBtLoss.get()) {
-            pausedDueToBtLoss.set(false)
+        // Only auto-resume if WE paused due to BT loss. A user-initiated pause must NOT be
+        // overridden by BT events.
+        if (pausedDueToBtLoss.compareAndSet(true, false)) {
             isPaused.set(false)
+            recorderListener?.onAutoResume()
         }
     }
 
@@ -358,12 +387,17 @@ class Mp3Recorder(
         if (!isBtPriority) return
         when (context.config.btDisconnectAction) {
             BT_DISCONNECT_PAUSE -> {
-                pausedDueToBtLoss.set(true)
-                isPaused.set(true)
-                postRouteEvent()
+                // Don't stomp on a user-initiated pause: only auto-pause if currently running.
+                if (!isPaused.get()) {
+                    pausedDueToBtLoss.set(true)
+                    isPaused.set(true)
+                    postRouteEvent()
+                    recorderListener?.onAutoPause("bt_disconnected")
+                }
             }
             BT_DISCONNECT_STOP -> {
                 isStopped.set(true)
+                recorderListener?.onAutoStop("bt_disconnected")
             }
             BT_DISCONNECT_FALLBACK_MIC -> {
                 pendingClearDevice = true

@@ -45,6 +45,9 @@ import org.fossify.voicerecorder.recorder.BluetoothAudioController
 import org.fossify.voicerecorder.recorder.MediaRecorderWrapper
 import org.fossify.voicerecorder.recorder.Mp3Recorder
 import org.fossify.voicerecorder.recorder.Recorder
+import org.fossify.voicerecorder.recorder.RecorderListener
+import android.os.Handler
+import android.os.Looper
 import org.greenrobot.eventbus.EventBus
 import java.io.File
 import java.util.Timer
@@ -67,6 +70,42 @@ class RecorderService : Service() {
     private var amplitudeTimer = Timer()
     private var recorder: Recorder? = null
     private var bluetoothController: BluetoothAudioController? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Lets [Mp3Recorder] drive service-level state transitions when it auto-pauses/stops on a BT
+     * disconnect. Without this, only the recorder thread knows about the pause; the service's
+     * [status] stays RECORDING_RUNNING, the duration timer keeps ticking, and the notification
+     * still says "Recording" — even though no audio is actually being captured.
+     */
+    private val recorderListener = object : RecorderListener {
+        override fun onAutoPause(reason: String) {
+            mainHandler.post {
+                if (status == RECORDING_RUNNING) {
+                    status = RECORDING_PAUSED
+                    broadcastStatus()
+                    startForeground(RECORDER_RUNNING_NOTIF_ID, showNotification())
+                }
+            }
+        }
+
+        override fun onAutoResume() {
+            mainHandler.post {
+                if (status == RECORDING_PAUSED) {
+                    status = RECORDING_RUNNING
+                    broadcastStatus()
+                    startForeground(RECORDER_RUNNING_NOTIF_ID, showNotification())
+                }
+            }
+        }
+
+        override fun onAutoStop(reason: String) {
+            mainHandler.post {
+                stopRecording()
+                stopSelf()
+            }
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -119,7 +158,7 @@ class RecorderService : Service() {
             } else null
 
             recorder = if (btPriorityOn || recordMp3()) {
-                Mp3Recorder(this, bluetoothController)
+                Mp3Recorder(this, bluetoothController, recorderListener)
             } else {
                 MediaRecorderWrapper(this)
             }
